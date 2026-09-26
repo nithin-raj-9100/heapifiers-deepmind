@@ -448,7 +448,7 @@ function bindLive() {
   });
   $("#btn-talk").addEventListener("click", toggleTalk);
   $("#btn-stop").addEventListener("click", () => {
-    state.player?.flush("agent");
+    state.player?.flush();
     sendJson({ type: "agent", action: "interrupt" });
   });
   $("#btn-mute").addEventListener("click", () => {
@@ -542,7 +542,17 @@ function renderCaption(message) {
   const spokenInTarget = spoken && spoken === primaryLanguage(streamTarget);
   // A language outside the session's pair is almost always a misdetection the other stream got right.
   const foreign = spoken && spoken !== primaryLanguage(state.config.languageA) && spoken !== primaryLanguage(state.config.languageB);
-  if (spokenInTarget || foreign) {
+  if (foreign) {
+    // Possibly one misheard word; a later fragment in a session language brings the card back.
+    if (card) {
+      card.remove();
+      state.cards.delete(key);
+      state.metrics.phrases = Math.max(0, state.metrics.phrases - 1);
+      $("#m-phrases").textContent = String(state.metrics.phrases);
+    }
+    return;
+  }
+  if (spokenInTarget) {
     if (card) {
       card.remove();
       state.metrics.phrases = Math.max(0, state.metrics.phrases - 1);

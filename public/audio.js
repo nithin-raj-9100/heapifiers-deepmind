@@ -8,6 +8,8 @@
  */
 
 export const OUTPUT_RATE = 24000;
+// A finished voice must be silent this long before another voice may take over the speaker.
+const SOURCE_SWITCH_QUIET_MS = 400;
 export const SOURCE_NAMES = { 1: "translate", 2: "agent", 3: "inject", 4: "readback" };
 
 export class MicCapture {
@@ -79,6 +81,8 @@ export class Player {
     }
     this.queue = [];
     this.nextTime = 0;
+    this.current = null;
+    this.lastEnqueueAt = {};
     this.active = new Map(); // node -> source
     this.playing = { translate: false, agent: false, inject: false, readback: false };
     this.endTimers = {};
@@ -96,16 +100,28 @@ export class Player {
     if (pcm.byteLength < 2) return;
     const aligned = pcm.byteLength % 2 === 0 ? pcm : pcm.slice(0, pcm.byteLength - 1);
     this.queue.push({ source, samples: new Int16Array(aligned) });
+    this.lastEnqueueAt[source] = performance.now();
     this.schedule();
   }
 
   schedule() {
     const now = this.context.currentTime;
     if (this.nextTime < now) this.nextTime = now + 0.05;
+    // One voice at a time: interleaving the 250 ms chunks of two streams that arrive together
+    // (a translation and Parley, say) garbles both and clicks at every switch. The current
+    // source keeps the timeline until it has finished and gone quiet, then the next one starts.
+    if (this.current && !this.queue.some((item) => item.source === this.current)) {
+      const finished = now >= this.nextTime - 0.06;
+      const quiet = performance.now() - (this.lastEnqueueAt[this.current] ?? 0) > SOURCE_SWITCH_QUIET_MS;
+      if (finished && quiet) this.current = null;
+    }
+    if (!this.current) this.current = this.queue[0]?.source ?? null;
     // Keep roughly 700 ms scheduled ahead: enough to absorb network jitter, small enough
     // that a flush feels instant.
-    while (this.queue.length > 0 && this.nextTime - now < 0.7) {
-      const item = this.queue.shift();
+    while (this.current && this.nextTime - now < 0.7) {
+      const index = this.queue.findIndex((queued) => queued.source === this.current);
+      if (index < 0) break;
+      const [item] = this.queue.splice(index, 1);
       const buffer = this.context.createBuffer(1, item.samples.length, OUTPUT_RATE);
       const channel = buffer.getChannelData(0);
       for (let index = 0; index < item.samples.length; index++) channel[index] = item.samples[index] / 32768;
@@ -147,6 +163,7 @@ export class Player {
   /** Stop everything queued or playing for one source (or all sources). */
   flush(source = null) {
     this.queue = source ? this.queue.filter((item) => item.source !== source) : [];
+    if (!source || source === this.current) this.current = null;
     for (const [node, nodeSource] of [...this.active.entries()]) {
       if (source && nodeSource !== source) continue;
       try {
@@ -163,6 +180,7 @@ export class Player {
       }
     }
     if (!source || this.active.size === 0) this.nextTime = 0;
+    this.schedule();
   }
 
   isPlaying(source) {

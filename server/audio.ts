@@ -71,6 +71,14 @@ export function rmsLevel(pcm: Buffer): number {
 }
 
 /** Server → browser binary audio frames carry a 4-byte header: [source, flags, 0, 0]. */
+/** Largest absolute sample, 0..1. */
+export function peakLevel(pcm: Buffer): number {
+  const samples = alignedInt16(pcm);
+  let peak = 0;
+  for (let index = 0; index < samples.length; index++) peak = Math.max(peak, Math.abs(samples[index] ?? 0));
+  return peak / 32768;
+}
+
 export const AUDIO_SOURCE = { translate: 1, agent: 2, inject: 3, readback: 4 } as const;
 export type AudioSource = keyof typeof AUDIO_SOURCE;
 

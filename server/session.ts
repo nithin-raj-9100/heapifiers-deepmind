@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type WebSocket from "ws";
-import { frameAudio, MIC_CHUNK_BYTES, MIC_SAMPLE_RATE, MODEL_OUTPUT_SAMPLE_RATE, resamplePcm16, type AudioSource, rmsLevel } from "./audio.js";
+import { frameAudio, MIC_CHUNK_BYTES, MIC_SAMPLE_RATE, MODEL_OUTPUT_SAMPLE_RATE, resamplePcm16, type AudioSource, rmsLevel, peakLevel } from "./audio.js";
 import { findLanguage, findScenario, type Scenario } from "./catalog.js";
 import type { ModelIds } from "./config.js";
 import { LiveClient, type LiveCloseInfo, type LiveMessage } from "./gemini/live-client.js";
@@ -32,8 +32,9 @@ const PLAYBACK_TAIL_MS = 300;
 // The browser's playback "end" can be lost; never trust "start" beyond the audio we actually sent plus scheduling slack.
 const TRANSLATE_GATE_SLACK_MS = 1500;
 // The translate model streams digital silence in real time between phrases, forever. Forwarding it keeps
-// the half-duplex gate shut and the phrase idle timer alive, so it must be dropped here.
-const TRANSLATE_SILENCE_RMS = 0.002;
+// the half-duplex gate shut and the phrase idle timer alive, so it must be dropped here. Peak, not RMS:
+// quiet breaths and word tails inside speech must survive, only true digital silence goes.
+const TRANSLATE_SILENCE_PEAK = 0.002;
 // Half-duplex plays translations consecutively: held until the speaker has paused this long.
 const SPEAKER_PAUSE_MS = 700;
 const MIC_VOICE_RMS = 0.015;
@@ -49,6 +50,8 @@ const TURN_MAX_WAIT_MS = 20_000;
  */
 class PhraseAssembler {
   private phraseId = 0;
+  private audioMs = 0;
+  private droppedAudioMs = 0;
   private source = "";
   private target = "";
   private sourceLang: string | undefined;
@@ -71,10 +74,21 @@ class PhraseAssembler {
     private readonly onFirstAudio: (at: number) => void,
     private readonly onTail: (latencyMs: number) => void,
     private readonly isSessionLanguage: (code: string) => boolean,
+    private readonly log: (line: string) => void,
+    private readonly onBegin: () => void,
+    private readonly targetLanguage: () => string,
   ) {}
 
+  /** Only the stream whose target differs from the spoken language may speak. With echoTargetLanguage
+   * off the other stream should be silent, but it is not always; its audio would interleave with the
+   * real translation in the browser's single playback queue and garble both. */
   get audioAllowed(): boolean {
-    return !this.foreign;
+    return !this.foreign && !this.spokenInTarget;
+  }
+
+  private get spokenInTarget(): boolean {
+    const spoken = (this.sourceLang ?? "").toLowerCase().split("-")[0];
+    return Boolean(spoken) && spoken === this.targetLanguage().toLowerCase().split("-")[0];
   }
 
   /**
@@ -93,7 +107,8 @@ class PhraseAssembler {
     }
     if (this.sourceDone) this.finalize();
     this.begin();
-    if (languageCode && !this.isSessionLanguage(languageCode)) this.foreign = true;
+    // The latest detection decides: one misheard word at the start must not drop the whole phrase.
+    if (languageCode) this.foreign = !this.isSessionLanguage(languageCode);
     this.source += text;
     if (languageCode) this.sourceLang = languageCode;
     this.caption("source", false);
@@ -124,6 +139,11 @@ class PhraseAssembler {
     this.emit({ type: "caption", stream: this.stream, role, text, languageCode, final, phraseId: this.phraseId });
   }
 
+  countAudio(ms: number, played: boolean): void {
+    if (played) this.audioMs += ms;
+    else this.droppedAudioMs += ms;
+  }
+
   audioArrived(): void {
     // Audio that arrives after a phrase closed is the tail of that phrase's speech,
     // not a new phrase: never open one on audio alone.
@@ -144,6 +164,7 @@ class PhraseAssembler {
     }
     if (!this.sourceDone) this.caption("source", true);
     if (!this.targetDone) this.caption("target", true);
+    this.log(`phrase ${this.stream} [${this.sourceLang ?? "?"}→${this.targetLang ?? "?"}]${this.foreign ? " DROPPED (not a session language)" : ""} audio=${Math.round(this.audioMs)}ms dropped=${Math.round(this.droppedAudioMs)}ms: "${this.source.trim().slice(0, 80)}" → "${this.target.trim().slice(0, 80)}"`);
     if (!this.foreign) {
       if (this.sourceDoneAt && this.targetDoneAt && this.target) this.onTail(this.targetDoneAt - this.sourceDoneAt);
       this.onComplete({ stream: this.stream, source: this.source, target: this.target, sourceLang: this.sourceLang, targetLang: this.targetLang, at: this.startedAt });
@@ -160,6 +181,7 @@ class PhraseAssembler {
     if (this.startedAt === 0) {
       this.startedAt = Date.now();
       this.phraseId += 1;
+      this.onBegin();
     }
   }
 
@@ -179,6 +201,8 @@ class PhraseAssembler {
     this.targetLang = undefined;
     this.sourceDone = false;
     this.targetDone = false;
+    this.audioMs = 0;
+    this.droppedAudioMs = 0;
     this.sourceDoneAt = 0;
     this.targetDoneAt = 0;
     this.startedAt = 0;
@@ -256,6 +280,9 @@ export class ParleySession {
   private tapTurn: TapTurn | null = null;
   private tapTurnCount = 0;
   private heldWhileTalking: Array<{ source: AudioSource; pcm: Buffer }> = [];
+  /** Set by Stop: drop translated audio until someone starts a new phrase. */
+  private translateStopped = false;
+  private injectAudioStopped = false;
   private padTimer: NodeJS.Timeout | null = null;
   private turnDoneTimer: NodeJS.Timeout | null = null;
 
@@ -281,8 +308,8 @@ export class ParleySession {
   ) {
     const isSessionLanguage = (code: string) => this.isSessionLanguage(code);
     this.phrases = {
-      toA: new PhraseAssembler("toA", (m) => this.send(m), (r) => this.captions.push(this.attribute(r)), (at) => this.recordTranslateLatency(at), (ms) => this.recordTranslateTail(ms), isSessionLanguage),
-      toB: new PhraseAssembler("toB", (m) => this.send(m), (r) => this.captions.push(this.attribute(r)), (at) => this.recordTranslateLatency(at), (ms) => this.recordTranslateTail(ms), isSessionLanguage),
+      toA: new PhraseAssembler("toA", (m) => this.send(m), (r) => this.captions.push(this.attribute(r)), (at) => this.recordTranslateLatency(at), (ms) => this.recordTranslateTail(ms), isSessionLanguage, (line) => this.log(line), () => (this.translateStopped = false), () => this.config.languageA),
+      toB: new PhraseAssembler("toB", (m) => this.send(m), (r) => this.captions.push(this.attribute(r)), (at) => this.recordTranslateLatency(at), (ms) => this.recordTranslateTail(ms), isSessionLanguage, (line) => this.log(line), () => (this.translateStopped = false), () => this.config.languageB),
     };
   }
 
@@ -626,9 +653,11 @@ export class ParleySession {
     for (const part of content.modelTurn?.parts ?? []) {
       if (!part.inlineData?.data) continue;
       const pcm = Buffer.from(part.inlineData.data, "base64");
-      if (pcm.length < 2 || rmsLevel(pcm) < TRANSLATE_SILENCE_RMS) continue;
+      if (pcm.length < 2 || peakLevel(pcm) < TRANSLATE_SILENCE_PEAK) continue;
       phrase.audioArrived();
-      if (!phrase.audioAllowed) continue;
+      const allowed = phrase.audioAllowed && !this.translateStopped;
+      phrase.countAudio((pcm.length / 2 / MODEL_OUTPUT_SAMPLE_RATE) * 1000, allowed);
+      if (!allowed) continue;
       if (this.config.mode === "tap") {
         const turn = this.tapTurn;
         if (turn) {
@@ -890,10 +919,18 @@ export class ParleySession {
       this.engaged = false;
       this.send({ type: "agent", event: "released" });
     } else {
-      // The browser already flushed its queue; drop the rest of this turn's audio.
+      // Stop silences everything being spoken. The browser already flushed its queue; drop the
+      // rest of what is still streaming in so it cannot start playing again.
       if (this.agentTurn.speaking) this.metrics.interruptions++;
       this.agentTurn.speaking = false;
       this.agentTurn.suppressed = true;
+      this.translateStopped = true;
+      this.injectAudioStopped = true;
+      this.heldTranslate = [];
+      this.heldWhileTalking = [];
+      const now = Date.now();
+      this.playingUntil.translate = this.playingUntil.agent = this.playingUntil.inject = now;
+      this.translateAudioEndsAt = this.agentAudioEndsAt = now;
       this.send({ type: "agent", event: "interrupted" });
     }
   }
@@ -903,6 +940,7 @@ export class ParleySession {
   private async inject(seedText: string | undefined, opener: number | undefined): Promise<void> {
     if (this.phase !== "live" || this.injecting) return;
     this.injecting = true;
+    this.injectAudioStopped = false;
     this.metrics.injections++;
     this.send({ type: "inject", state: "thinking" });
     try {
@@ -936,7 +974,7 @@ export class ParleySession {
               this.send({ type: "metric", name: "counterpart_first_audio", valueMs: Date.now() - startedAt + line.latencyMs, stream: "inject" });
             }
             const pcm24 = chunk.sampleRate === MODEL_OUTPUT_SAMPLE_RATE ? chunk.pcm : resamplePcm16(chunk.pcm, chunk.sampleRate, MODEL_OUTPUT_SAMPLE_RATE);
-            this.sendAudio("inject", pcm24);
+            if (!this.injectAudioStopped) this.sendAudio("inject", pcm24);
             queue.push(resamplePcm16(chunk.pcm, chunk.sampleRate, MIC_SAMPLE_RATE));
           }
         } catch (error) {
