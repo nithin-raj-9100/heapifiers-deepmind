@@ -29,20 +29,6 @@ Audio coming back (24 kHz PCM) is framed with a source byte. The browser's playe
 
 "Simulate Person B" runs `gemini-3.8-flash` (JSON: line in language B plus a gloss in language A), then `gemini-3.8-flash-lite-tts` over server-sent events; chunks go to the browser for playback and, resampled to 16 kHz, are paced into all four live sessions at 100 ms per tick with trailing silence so the detectors close the turn. "End" sends the 16 kHz recording to `gemini-3.5-transcribe` through the Interactions API (verbatim, speaker diarization, word timestamps), rebuilds speaker segments from the word annotations, and asks `gemini-3.8-flash` for the record against a JSON schema whose scenario fields come from the catalog. "Read aloud" streams `gemini-3.8-flash-tts`. The Gemini key never leaves the server, which caps concurrent sessions and session length; visitors may bring their own key.
 
-## Challenges we overcame
-
-**Documentation that did not match the wire.** The Live Translate guide places `inputAudioTranscription` inside `generationConfig`; the endpoint closes the socket with code 1007. We wrote smoke scripts against every model first and built on what the API actually returned: `languageCode` per transcription fragment, empty transcription messages that mark phrase ends but also arrive as keepalives, transcribe word annotations labelled `spk:N` whose concatenated text drops the spaces between speakers, and Gemini 3.8 Live rejecting the affective-dialog and proactive-audio flags because both are now always on.
-
-**A tool-call loop.** Gemini 3.8 Live defaults to non-blocking function calls. Each tool result triggered a fresh generation that called `report_tone` again: 24 tone readings for 4 turns, and the assistant never reached its answer. Declaring the tools `BLOCKING` gives one report per turn, delivered before any speech.
-
-**Wake words that speech recognition mangles.** "Parley" came back as "Parle", "Par", "Parlay", French "Parlez", and in Telugu tests collided with "parledu" ("no problem"). The gate is two-key: the model, which heard the audio, states `addressed_to_parley` in its tone report, and a wake-word pattern covering Latin and Indic spellings is the other key. The server forwards Parley's audio only when a key is set, so a chatty model cannot talk over the conversation, and the prompt teaches it that "do you understand?" is for the other person.
-
-**Interruptions after generation ends.** The model generates faster than it speaks, so its `interrupted` signal only covers the first second or two; a user interrupting playback got nothing. The browser reports playback state, the server treats speech that starts while Parley's audio is still playing as a barge-in, flushes the queue and closes the turn, and local energy detection ducks the voice before the round trip completes.
-
-**Laptop speakers.** Testing on real hardware exposed a chain of problems. The translate model streams digital silence between phrases, in real time, forever; forwarding it held the half-duplex gate shut and kept phrases from closing, so a peak-level filter drops true silence while keeping breaths and word tails. Translations are now held until the speaker has paused 700 ms and played consecutively; the gate expires from audio actually sent, not only from the browser's playback report; and the mic is also gated while Parley speaks. The "silent" translate stream was not always silent, and its stray output interleaved with the real translation, so the server drops audio from the stream whose target is the language just spoken.
-
-**Demoing a two-person product alone.** Judges evaluate solo. The simulated counterpart closes the loop: a second voice, in the other language, that reacts to what the judge just said, interpreted back through the same pipeline.
-
 ## Why these choices were right
 
 Using the dedicated translate model rather than asking Gemini 3.8 Live to interpret keeps the interpreter faithful and fast (it neither editorialises nor waits for the end of the sentence), and frees the general model to do what only it can: understand who is being addressed, read tone, call tools and be interrupted. Blocking tools, server-side gating and a single-voice player make the experience deterministic where the model is probabilistic. Offering hands-free and tap-to-talk modes lets the same pipeline serve headphones, laptop speakers and noisy rooms. Streaming TTS cut the counterpart's time to first audio from 8.7 s to 3.8 s; `thinkingLevel: low` keeps the structured record under 5 s. A plain Node server with the key server-side is safe to host publicly.
@@ -50,11 +36,3 @@ Using the dedicated translate model rather than asking Gemini 3.8 Live to interp
 ## Results
 
 Measured against the real API by `scripts/e2e.mjs`, which synthesizes speech, drives a full session and asserts fifteen behaviours (all passing): first translated audio arrives 2.2–2.4 s after a speaker starts and completes 250–350 ms after they stop; Parley's first audio arrives 0.9–1.6 s after the speaker stops when addressed and never when not; barge-in produces an `interrupted` event in under half a second; a 62 s conversation is diarized in 7.7 s and reduced to the structured record in 3.5–4.6 s with speakers correctly mapped to clinician and patient. Twenty unit tests, including the foundation's transcript-merging cases, run in CI. A Chromium test with a WAV file as the microphone exercised the real UI end to end, and sessions with real voices on laptop speakers shaped the final gating and playback design.
-
-## What is next
-
-Per-participant devices over WebRTC, speaker-attributed live captions, and a Files API path for long sessions.
-
-## Foundation
-
-Parley grew out of our teammate's `gemini-whisper-local`, a macOS dictation app on Gemini 3.5 Transcribe Live. We ported its interim-hypothesis merging (with its original test cases) to TypeScript, reused its audio framing and voice-activity findings, and scaled one dictation stream to four concurrent audio sessions.

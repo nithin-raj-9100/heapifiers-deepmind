@@ -150,17 +150,9 @@ scripts/e2e.mjs       Real-API end-to-end check
 gemini-whisper-local-main/  The Swift foundation (macOS dictation with Gemini 3.5 Transcribe Live)
 ```
 
-## What we reused from the foundation
-
-`gemini-whisper-local` streams microphone PCM to `gemini-3.5-transcribe-live` and merges its revised interim hypotheses without duplicating or losing words. Parley ports that merging logic (`InterimTranscriptAccumulator`, `joinUniqueTranscript`, revision replacement) to TypeScript with the original Swift test cases, reuses its 16 kHz / 100 ms framing and its manual-VAD findings, and extends the idea from one dictation stream to four concurrent audio sessions.
-
 ## Limitations and next steps
 
 - Sessions are capped (12 min by default) to protect the hosted key; the diarized pass covers the last 7 minutes inline (a Files API upload would lift this).
 - Half-duplex mode mutes the room while a translation plays; simultaneous crosstalk needs headphones or per-person devices.
 - Two languages per session. A third language is ignored by design.
 - Next: per-participant devices over WebRTC, speaker-attributed live captions from the diarized model, and Lyria-generated hold music while the record is prepared.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
