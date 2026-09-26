@@ -1,0 +1,14 @@
+# secrets — never commit a Gemini key
+.env
+.env.*
+!.env.example
+
+# build output and dependencies
+node_modules/
+dist/
+
+# local scratch, recordings and OS noise
+scratch/
+recordings/
+*.log
+.DS_Store

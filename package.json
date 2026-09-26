@@ -1,0 +1,29 @@
+{
+  "name": "parley",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Parley — a real-time interpreter, mediator and scribe for cross-language conversations, built on the Gemini audio stack.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server/index.js",
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test \"dist/tests/**/*.test.js\"",
+    "e2e": "tsc -p tsconfig.json && node scripts/e2e.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.18.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.2"
+  }
+}

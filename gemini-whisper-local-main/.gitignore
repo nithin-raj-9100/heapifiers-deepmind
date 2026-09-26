@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+macos/GeminiWhisperAudio.app/
+macos/GeminiWhisper.app/
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcodeproj/xcuserdata/
+.DS_Store
+*.log
+*.dylib

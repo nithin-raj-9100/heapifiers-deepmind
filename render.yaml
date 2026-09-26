@@ -1,0 +1,15 @@
+# One-click deploy on Render (https://render.com): New → Blueprint → this repo.
+# Render supports WebSockets on the free plan, so the Live sessions work unchanged.
+services:
+  - type: web
+    name: parley
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false # paste your key in the Render dashboard; never commit it
+      - key: PARLEY_MAX_SESSIONS
+        value: "6"
+      - key: PARLEY_SESSION_MAX_MINUTES
+        value: "12"

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Parley</title>
+    <meta name="description" content="Parley is a real-time interpreter, mediator and scribe for conversations between people who do not share a language, built on the Gemini audio stack." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2325d9c2'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='28' fill='url(%23g)'/%3E%3C/svg%3E" />
+  </head>
+  <body data-view="setup">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-orb" aria-hidden="true"></span>
+        <span class="brand-name">Parley</span>
+        <span class="brand-tag">live interpreter · mediator · scribe</span>
+      </div>
+      <div class="stream-pills" id="stream-pills" aria-label="Upstream Gemini sessions">
+        <span class="pill" data-stream="translate"><i></i>Translate<small>3.5 Live Translate</small></span>
+        <span class="pill" data-stream="agent"><i></i>Parley<small>3.8 Live</small></span>
+        <span class="pill" data-stream="scribe"><i></i>Scribe<small>3.5 Transcribe Live</small></span>
+      </div>
+      <div class="topbar-right">
+        <span class="clock" id="clock">00:00</span>
+        <button class="btn btn-ghost" id="btn-end" hidden>End &amp; summarize</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- ============================ SETUP ============================ -->
+      <section id="view-setup" class="view view-setup">
+        <div class="hero">
+          <h1>Two people. Two languages.<br /><em>One interpreter who listens, translates, mediates and writes it all down.</em></h1>
+          <p class="lede">
+            Parley runs four Gemini audio models at once: simultaneous speech-to-speech translation in both directions, an interruptible voice assistant that reads the tone of every speaker, a live scribe, and a diarized post-conversation record with action items you can hear read back in either language.
+          </p>
+        </div>
+
+        <form id="setup-form" class="setup-grid" autocomplete="off">
+          <fieldset class="card">
+            <legend>Languages</legend>
+            <div class="lang-row">
+              <label class="field">
+                <span>Person A speaks</span>
+                <select id="lang-a"></select>
+              </label>
+              <button type="button" class="btn btn-icon" id="btn-swap" title="Swap languages" aria-label="Swap languages">⇄</button>
+              <label class="field">
+                <span>Person B speaks</span>
+                <select id="lang-b"></select>
+              </label>
+            </div>
+            <p class="hint">Speak either language into one microphone. Parley detects who is talking and interprets into the other language.</p>
+          </fieldset>
+
+          <fieldset class="card">
+            <legend>Scenario</legend>
+            <div class="scenario-grid" id="scenario-grid"></div>
+          </fieldset>
+
+          <fieldset class="card">
+            <legend>Voices &amp; behaviour</legend>
+            <div class="two-col">
+              <label class="field">
+                <span>Parley's voice</span>
+                <select id="voice-agent"></select>
+              </label>
+              <label class="field">
+                <span>Simulated Person B voice</span>
+                <select id="voice-counterpart"></select>
+              </label>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="duplex-half" checked />
+              <span><strong>Half-duplex safety</strong><small>Mute the mic while translated audio plays, so laptop speakers cannot feed the translation back into the interpreter. Turn off with headphones.</small></span>
+            </label>
+            <details class="byok" id="byok">
+              <summary>Use my own Gemini API key</summary>
+              <label class="field">
+                <span>Gemini API key (kept in this browser only, sent once to start a session)</span>
+                <input type="password" id="api-key" placeholder="AIza… or AQ.…" />
+              </label>
+            </details>
+          </fieldset>
+
+          <div class="setup-actions">
+            <button type="submit" class="btn btn-primary btn-lg" id="btn-start">Start listening</button>
+            <p class="hint" id="setup-hint">Your browser will ask for microphone access. Use headphones for full-duplex conversations.</p>
+          </div>
+        </form>
+      </section>
+
+      <!-- ============================ LIVE ============================ -->
+      <section id="view-live" class="view view-live" hidden>
+        <div class="live-grid">
+          <div class="stage">
+            <div class="orb-wrap">
+              <div class="orb" id="orb" data-state="idle">
+                <div class="orb-core"></div>
+                <div class="orb-ring"></div>
+                <div class="orb-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+              </div>
+              <div class="orb-status" id="orb-status">Connecting…</div>
+              <div class="tone-chip" id="tone-chip" hidden>
+                <span class="tone-dot"></span>
+                <span class="tone-text"></span>
+              </div>
+              <div class="orb-controls">
+                <button class="btn btn-ask" id="btn-ask" title="Hold to talk privately to Parley (or hold Space)">Hold to ask Parley</button>
+                <button class="btn btn-ghost" id="btn-stop" title="Stop Parley mid-sentence">Stop</button>
+              </div>
+              <div class="mic-row">
+                <button class="btn btn-ghost btn-sm" id="btn-mute">Mute mic</button>
+                <div class="meter" id="mic-meter" title="Microphone level"><i></i></div>
+                <span class="hint" id="gate-hint"></span>
+              </div>
+            </div>
+
+            <div class="feed-header">
+              <div class="person person-a"><span class="flag" id="flag-a"></span><b id="name-a"></b><small id="role-a"></small></div>
+              <div class="feed-title">Conversation</div>
+              <div class="person person-b"><span class="flag" id="flag-b"></span><b id="name-b"></b><small id="role-b"></small></div>
+            </div>
+            <div class="feed" id="feed" aria-live="polite">
+              <div class="feed-empty" id="feed-empty">Start talking in either language. Translations appear here as they are spoken, and you will hear them in the other language.</div>
+            </div>
+          </div>
+
+          <aside class="sidebar">
+            <section class="card side-card">
+              <h3>Simulate Person B <small>Gemini 3.8 Flash + Flash-Lite TTS</small></h3>
+              <p class="hint">Alone? Let Gemini play the other person. It answers in character in Person B's language, and Parley interprets it back for you.</p>
+              <div class="chips" id="opener-chips"></div>
+              <div class="inject-row">
+                <input type="text" id="inject-text" placeholder="…or tell Person B what to say (any language)" maxlength="400" />
+                <button class="btn btn-secondary" id="btn-inject">Reply in character</button>
+              </div>
+              <div class="inject-status" id="inject-status" hidden></div>
+            </section>
+
+            <section class="card side-card scribe-card">
+              <h3>Scribe <small>Gemini 3.5 Transcribe Live</small></h3>
+              <div class="scribe" id="scribe">
+                <div class="scribe-empty" id="scribe-empty">Verbatim transcript, both languages, as it is spoken.</div>
+              </div>
+              <div class="scribe-interim" id="scribe-interim"></div>
+            </section>
+
+            <section class="card side-card">
+              <h3>Tone of voice <small>reported by Parley via tool call</small></h3>
+              <ol class="tone-list" id="tone-list"><li class="hint">No readings yet.</li></ol>
+            </section>
+
+            <section class="card side-card metrics">
+              <h3>Latency &amp; events</h3>
+              <dl id="metrics">
+                <div><dt>Translated audio after speaker starts</dt><dd id="m-translate">–</dd></div>
+                <div><dt>Translation done after speaker stops</dt><dd id="m-tail">–</dd></div>
+                <div><dt>Parley, first audio after you stop</dt><dd id="m-agent">–</dd></div>
+                <div><dt>Interruptions handled</dt><dd id="m-interrupts">0</dd></div>
+                <div><dt>Phrases interpreted</dt><dd id="m-phrases">0</dd></div>
+              </dl>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ============================ SUMMARY ============================ -->
+      <section id="view-summary" class="view view-summary" hidden>
+        <div class="summary-head">
+          <div>
+            <p class="eyebrow">Session record · Gemini 3.5 Transcribe (diarized) → Gemini 3.8 Flash (structured) → Gemini 3.8 Flash TTS</p>
+            <h2 id="summary-title">Summarizing…</h2>
+            <p class="hint" id="summary-error" hidden></p>
+          </div>
+          <div class="summary-actions">
+            <button class="btn btn-secondary" id="btn-download-json">Download JSON</button>
+            <button class="btn btn-secondary" id="btn-download-md">Download Markdown</button>
+            <button class="btn btn-primary" id="btn-new">New session</button>
+          </div>
+        </div>
+        <div class="summary-progress" id="summary-progress">
+          <div class="spinner"></div>
+          <p>Transcribing the whole conversation with speaker diarization, then extracting decisions and action items…</p>
+        </div>
+        <div class="summary-grid" id="summary-grid" hidden>
+          <section class="card summary-card span-2">
+            <div class="card-title-row">
+              <h3><span id="summary-flag-a"></span> Summary for Person A</h3>
+              <button class="btn btn-sm btn-secondary" data-readback="A">▶ Read aloud</button>
+            </div>
+            <p id="summary-a"></p>
+          </section>
+          <section class="card summary-card span-2">
+            <div class="card-title-row">
+              <h3><span id="summary-flag-b"></span> Summary for Person B</h3>
+              <button class="btn btn-sm btn-secondary" data-readback="B">▶ Read aloud</button>
+            </div>
+            <p id="summary-b"></p>
+          </section>
+          <section class="card summary-card"><h3>Action items</h3><table class="table" id="action-items"></table></section>
+          <section class="card summary-card"><h3>Decisions</h3><ul id="decisions"></ul></section>
+          <section class="card summary-card"><h3>Key points</h3><ul id="key-points"></ul></section>
+          <section class="card summary-card"><h3>Open questions</h3><ul id="open-questions"></ul></section>
+          <section class="card summary-card"><h3 id="fields-title">Scenario fields</h3><dl class="fields" id="scenario-fields"></dl></section>
+          <section class="card summary-card"><h3>Tone arc &amp; risk flags</h3><p id="tone-arc"></p><ul id="risk-flags"></ul></section>
+          <section class="card summary-card span-4">
+            <h3>Diarized transcript <small id="transcript-meta"></small></h3>
+            <div class="transcript" id="transcript"></div>
+          </section>
+          <section class="card summary-card span-4 stats"><h3>Session stats</h3><dl id="stats"></dl></section>
+        </div>
+      </section>
+    </main>
+
+    <div class="toasts" id="toasts" aria-live="assertive"></div>
+    <template id="tpl-utterance">
+      <article class="utt">
+        <div class="utt-meta"><span class="who"></span><span class="lang"></span></div>
+        <p class="utt-source"></p>
+        <p class="utt-target"></p>
+      </article>
+    </template>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

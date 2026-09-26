@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible dictation, installation, or reliability problem
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never include API keys, private transcripts, or sensitive audio.
+  - type: input
+    id: version
+    attributes:
+      label: Commit or release
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS version and Xcode / Command Line Tools version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: permissions
+    attributes:
+      label: Microphone and Accessibility status for Gemini Whisper (not Bun)
+    validations:
+      required: true
