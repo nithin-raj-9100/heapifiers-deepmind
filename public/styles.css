@@ -164,6 +164,17 @@ select:focus, input:focus { border-color: var(--parley-1); box-shadow: 0 0 0 3px
 .tone-chip[data-urgency="high"] .tone-dot { background: var(--bad); box-shadow: 0 0 10px rgba(248, 113, 113, 0.8); }
 .orb-controls { display: flex; gap: 10px; margin-top: 4px; }
 .mic-row { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.mode-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.talk-row { margin-top: 6px; }
+.talk {
+  display: inline-flex; align-items: center; gap: 10px; padding: 14px 30px; border-radius: 999px; font-size: 16px; font-weight: 700;
+  background: linear-gradient(135deg, var(--parley-1), var(--parley-2)); border: none; color: #07111a; user-select: none; -webkit-user-select: none;
+}
+.talk:hover { filter: brightness(1.08); background: linear-gradient(135deg, var(--parley-1), var(--parley-2)); }
+.talk-icon { width: 20px; height: 20px; fill: currentColor; }
+.talk[data-state="listening"] { background: linear-gradient(135deg, #f87171, #fb923c); box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.6); animation: talkpulse 1.4s ease-out infinite; }
+.talk[data-state="translating"], .talk[data-state="speaking"] { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-strong); }
+@keyframes talkpulse { 0% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.6); } 100% { box-shadow: 0 0 0 18px rgba(248, 113, 113, 0); } }
 .meter { width: 140px; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
 .meter i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--ok), var(--warn)); transition: width 0.08s; }
 
@@ -274,6 +285,7 @@ select:focus, input:focus { border-color: var(--parley-1); box-shadow: 0 0 0 3px
   .lang-row { flex-direction: column; align-items: stretch; }
   .btn-icon { align-self: center; }
   .two-col { grid-template-columns: 1fr; }
+  .mode-row { grid-template-columns: 1fr; }
   .summary-grid { grid-template-columns: 1fr; }
   .span-2, .span-4 { grid-column: span 1; }
   .utt { max-width: 92%; }

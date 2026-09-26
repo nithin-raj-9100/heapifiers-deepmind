@@ -11,6 +11,9 @@ test("normalizeSessionConfig applies defaults and rejects bad languages", () => 
   assert.equal(config.agentVoice, "Kore");
   assert.equal(config.counterpartVoice, "Leda");
   assert.equal(config.duplex, "full");
+  assert.equal(config.mode, "auto");
+  assert.equal(normalizeSessionConfig({ mode: "tap" }, true).mode, "tap");
+  assert.equal(normalizeSessionConfig({ mode: "walkie" as "tap" }, true).mode, "auto");
   assert.throws(() => normalizeSessionConfig({ languageA: "en", languageB: "en" }, true), ProtocolError);
   assert.throws(() => normalizeSessionConfig({ languageA: "xx", languageB: "en" }, true), ProtocolError);
   assert.equal(normalizeSessionConfig({ scenario: "nope" as ScenarioId }, true).scenario, "general");
@@ -27,6 +30,8 @@ test("parseClientMessage validates message shapes", () => {
   assert.deepEqual(parseClientMessage('{"type":"end"}'), { type: "end" });
   assert.deepEqual(parseClientMessage('{"type":"inject","opener":1}'), { type: "inject", text: undefined, opener: 1 });
   assert.deepEqual(parseClientMessage('{"type":"playback","source":"agent","state":"end"}'), { type: "playback", source: "agent", state: "end" });
+  assert.deepEqual(parseClientMessage('{"type":"turn","action":"start"}'), { type: "turn", action: "start" });
+  assert.throws(() => parseClientMessage('{"type":"turn","action":"pause"}'), ProtocolError);
   assert.throws(() => parseClientMessage("nope"), ProtocolError);
   assert.throws(() => parseClientMessage('{"type":"playback","source":"x","state":"start"}'), ProtocolError);
   assert.throws(() => parseClientMessage('{"type":"readback","language":"C"}'), ProtocolError);

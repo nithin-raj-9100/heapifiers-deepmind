@@ -14,6 +14,8 @@ export interface SessionConfig {
   counterpartVoice: string;
   /** half: mute the mic while translated audio plays (prevents feedback loops). */
   duplex: "half" | "full";
+  /** auto: hands-free, the mic is always live. tap: the mic streams only while a speaker's turn is open. */
+  mode: "auto" | "tap";
   /** Optional browser-supplied key, used instead of the server key when allowed. */
   apiKey?: string;
 }
@@ -22,6 +24,7 @@ export type ClientMessage =
   | { type: "start"; config: Partial<SessionConfig> }
   | { type: "playback"; source: "translate" | "agent" | "inject" | "readback"; state: "start" | "end" }
   | { type: "agent"; action: "engage" | "release" | "interrupt" }
+  | { type: "turn"; action: "start" | "stop" }
   | { type: "inject"; text?: string; opener?: number }
   | { type: "end" }
   | { type: "readback"; language: "A" | "B" }
@@ -68,6 +71,7 @@ export type ServerMessage =
   | { type: "tone"; reading: ToneReading }
   | { type: "inject"; state: "thinking" | "speaking" | "done" | "error"; text?: string; translation?: string; detail?: string }
   | { type: "metric"; name: string; valueMs: number; stream?: string }
+  | { type: "turn"; turnId: number; state: "listening" | "translating" | "done" }
   | { type: "summary"; summary: SessionSummary | null; transcript: Array<{ speaker: string; text: string; start: number; end: number }>; stats: Record<string, unknown>; error?: string }
   | { type: "readback"; language: "A" | "B"; state: "thinking" | "speaking" | "done" | "error"; detail?: string }
   | { type: "error"; code: string; message: string; fatal?: boolean }
@@ -108,6 +112,11 @@ export function parseClientMessage(raw: string): ClientMessage {
       if (action !== "engage" && action !== "release" && action !== "interrupt") throw new ProtocolError("invalid_agent_action", "Unknown agent action.");
       return { type: "agent", action };
     }
+    case "turn": {
+      const action = message.action;
+      if (action !== "start" && action !== "stop") throw new ProtocolError("invalid_turn", "Turn action must be start or stop.");
+      return { type: "turn", action };
+    }
     case "inject": {
       const text = typeof message.text === "string" ? message.text.slice(0, 600) : undefined;
       const opener = typeof message.opener === "number" && Number.isInteger(message.opener) ? message.opener : undefined;
@@ -137,6 +146,7 @@ export function normalizeSessionConfig(input: Partial<SessionConfig> | undefined
   const agentVoice = typeof input?.agentVoice === "string" && voiceNames.has(input.agentVoice) ? input.agentVoice : "Kore";
   const counterpartVoice = typeof input?.counterpartVoice === "string" && voiceNames.has(input.counterpartVoice) ? input.counterpartVoice : "Leda";
   const duplex = input?.duplex === "full" ? "full" : "half";
+  const mode = input?.mode === "tap" ? "tap" : "auto";
   const apiKey = allowByok && typeof input?.apiKey === "string" && input.apiKey.trim().length >= 20 ? input.apiKey.trim() : undefined;
-  return { languageA, languageB, scenario, agentVoice, counterpartVoice, duplex, ...(apiKey ? { apiKey } : {}) };
+  return { languageA, languageB, scenario, agentVoice, counterpartVoice, duplex, mode, ...(apiKey ? { apiKey } : {}) };
 }

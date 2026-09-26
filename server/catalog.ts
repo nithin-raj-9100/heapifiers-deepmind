@@ -154,7 +154,7 @@ export const SCENARIOS: Scenario[] = [
     tagline: "Any two people, any topic.",
     roleA: "Person A",
     roleB: "Person B",
-    agentHint: "",
+    agentHint: "The two people are talking to each other. When they say \"you\" they mean each other, never you: stay silent unless they say \"Parley\".",
     counterpartPersona: "You are a friendly person meeting Person A for the first time; you are curious about their work and city.",
     fields: [
       { key: "topics", label: "Topics discussed" },

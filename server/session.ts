@@ -37,6 +37,11 @@ const TRANSLATE_SILENCE_RMS = 0.002;
 // Half-duplex plays translations consecutively: held until the speaker has paused this long.
 const SPEAKER_PAUSE_MS = 700;
 const MIC_VOICE_RMS = 0.015;
+// Tap mode: after a turn ends, a little silence lets the models flush the last words and close the turn.
+const TURN_PAD_CHUNKS = 10;
+// A turn's translation is considered finished once no translated audio arrived for this long.
+const TURN_QUIET_MS = 1500;
+const TURN_MAX_WAIT_MS = 20_000;
 
 /**
  * Collects the fragmentary input/output transcriptions of the translate model into
@@ -192,6 +197,17 @@ interface AgentTurn {
   firstAudioAt: number | null;
 }
 
+interface TapTurn {
+  id: number;
+  stoppedAt: number;
+  bytes: number;
+  sumSquares: number;
+  samples: number;
+  firstAudioAt: number;
+  lastAudioAt: number;
+  audioMs: number;
+}
+
 function newAgentTurn(addressed: boolean): AgentTurn {
   return { addressed, speaking: false, suppressed: false, heard: "", said: "", activityEndAt: null, firstAudioAt: null };
 }
@@ -236,6 +252,12 @@ export class ParleySession {
   private heldTranslate: Buffer[] = [];
   private lastVoiceAt = 0;
   private releaseTimer: NodeJS.Timeout | null = null;
+  private talking = false;
+  private tapTurn: TapTurn | null = null;
+  private tapTurnCount = 0;
+  private heldWhileTalking: Array<{ source: AudioSource; pcm: Buffer }> = [];
+  private padTimer: NodeJS.Timeout | null = null;
+  private turnDoneTimer: NodeJS.Timeout | null = null;
 
   private readonly metrics = {
     translateFirstAudioMs: [] as number[],
@@ -308,6 +330,10 @@ export class ParleySession {
       case "agent":
         this.handleAgentAction(message.action);
         return;
+      case "turn":
+        if (message.action === "start") this.startTapTurn();
+        else this.stopTapTurn();
+        return;
       case "inject":
         void this.inject(message.text, message.opener);
         return;
@@ -325,13 +351,24 @@ export class ParleySession {
 
   handleAudio(pcm: Buffer): void {
     if (this.phase !== "live" || pcm.length < 2) return;
+    const tap = this.config.mode === "tap";
+    if (tap && !this.talking && !this.engaged) return;
     this.metrics.micFrames++;
     const now = Date.now();
+    if (tap && this.tapTurn && this.talking) {
+      const level = rmsLevel(pcm);
+      const samples = pcm.length >> 1;
+      this.tapTurn.bytes += pcm.length;
+      this.tapTurn.sumSquares += level * level * samples;
+      this.tapTurn.samples += samples;
+    }
+    // Tap mode needs no echo gate: the mic only streams while someone holds the floor.
     const gated =
       this.injecting ||
       now < this.playingUntil.readback ||
       now < this.playingUntil.inject ||
-      (this.config.duplex === "half" &&
+      (!tap &&
+        this.config.duplex === "half" &&
         !this.engaged &&
         (now < Math.min(this.playingUntil.translate, this.translateAudioEndsAt + TRANSLATE_GATE_SLACK_MS) ||
           now < Math.min(this.playingUntil.agent, this.agentAudioEndsAt + TRANSLATE_GATE_SLACK_MS)));
@@ -355,6 +392,7 @@ export class ParleySession {
     this.phase = "destroyed";
     this.stopInjection();
     this.stopReleasing();
+    this.clearTapTimers();
     if (this.maxTimer) clearTimeout(this.maxTimer);
     this.maxTimer = null;
     for (const client of [this.translateToA, this.translateToB, this.agent, this.scribe]) client?.close();
@@ -390,9 +428,9 @@ export class ParleySession {
     this.maxTimer = setTimeout(() => void this.end("session time limit reached"), this.deps.maxMinutes * 60_000);
     const { apiKey: _omit, ...publicConfig } = config;
     this.send({ type: "ready", sessionId: this.id, models: { ...this.deps.models }, config: publicConfig, limits: { maxMinutes: this.deps.maxMinutes } });
-    this.log(`start ${config.languageA}↔${config.languageB} scenario=${config.scenario} duplex=${config.duplex} byok=${Boolean(config.apiKey)}`);
+    this.log(`start ${config.languageA}↔${config.languageB} scenario=${config.scenario} mode=${config.mode} duplex=${config.duplex} byok=${Boolean(config.apiKey)}`);
 
-    if (config.duplex === "half") this.releaseTimer = setInterval(() => this.releaseHeldTranslate(), 100);
+    if (config.mode === "auto" && config.duplex === "half") this.releaseTimer = setInterval(() => this.releaseHeldTranslate(), 100);
     this.openTranslate("toA");
     this.openTranslate("toB");
     this.openAgent();
@@ -401,10 +439,12 @@ export class ParleySession {
 
   private async end(reason: string): Promise<void> {
     if (this.phase !== "live") return;
+    if (this.talking) this.stopTapTurn();
     this.phase = "ending";
     this.log(`ending: ${reason}`);
     this.stopInjection();
     this.stopReleasing();
+    this.clearTapTimers();
     if (this.maxTimer) clearTimeout(this.maxTimer);
     this.maxTimer = null;
     this.endedAt = Date.now();
@@ -589,7 +629,17 @@ export class ParleySession {
       if (pcm.length < 2 || rmsLevel(pcm) < TRANSLATE_SILENCE_RMS) continue;
       phrase.audioArrived();
       if (!phrase.audioAllowed) continue;
-      if (this.config.duplex === "half") {
+      if (this.config.mode === "tap") {
+        const turn = this.tapTurn;
+        if (turn) {
+          const now = Date.now();
+          if (!turn.firstAudioAt) turn.firstAudioAt = now;
+          turn.lastAudioAt = now;
+          turn.audioMs += (pcm.length / 2 / MODEL_OUTPUT_SAMPLE_RATE) * 1000;
+        }
+        if (this.talking) this.heldWhileTalking.push({ source: "translate", pcm });
+        else this.sendTranslateAudio(pcm);
+      } else if (this.config.duplex === "half") {
         this.heldTranslate.push(pcm);
         this.releaseHeldTranslate();
       } else {
@@ -694,7 +744,8 @@ export class ParleySession {
         this.send({ type: "agent", event: "speaking" });
       }
       this.agentAudioEndsAt = Math.max(Date.now(), this.agentAudioEndsAt) + (pcm.length / 2 / 24000) * 1000;
-      this.sendAudio("agent", pcm);
+      if (this.config.mode === "tap" && this.talking) this.heldWhileTalking.push({ source: "agent", pcm });
+      else this.sendAudio("agent", pcm);
     }
     if (content.outputTranscription?.text && this.agentTurn.speaking) {
       this.agentTurn.said += content.outputTranscription.text;
@@ -766,6 +817,64 @@ export class ParleySession {
       if (result) this.send({ type: "transcript", kind: "final", text: result.text, at: Date.now(), replaced: result.replaced });
     }
     void client;
+  }
+
+  // ---------------------------------------------------------------- tap-to-talk turns
+
+  private startTapTurn(): void {
+    if (this.phase !== "live" || this.config.mode !== "tap" || this.talking) return;
+    this.clearTapTimers();
+    this.heldWhileTalking = [];
+    this.tapTurnCount += 1;
+    this.tapTurn = { id: this.tapTurnCount, stoppedAt: 0, bytes: 0, sumSquares: 0, samples: 0, firstAudioAt: 0, lastAudioAt: 0, audioMs: 0 };
+    this.talking = true;
+    this.send({ type: "turn", turnId: this.tapTurn.id, state: "listening" });
+  }
+
+  private stopTapTurn(): void {
+    if (!this.talking || !this.tapTurn) return;
+    const turn = this.tapTurn;
+    this.talking = false;
+    turn.stoppedAt = Date.now();
+    const rms = Math.sqrt(turn.sumSquares / Math.max(1, turn.samples));
+    this.log(`turn ${turn.id}: spoke ${(turn.bytes / (MIC_SAMPLE_RATE * 2)).toFixed(1)}s rms=${rms.toFixed(4)}${rms < 0.005 ? " (mic looks silent)" : ""}`);
+    this.send({ type: "turn", turnId: turn.id, state: "translating" });
+
+    const held = this.heldWhileTalking;
+    this.heldWhileTalking = [];
+    for (const item of held) {
+      if (item.source === "translate") this.sendTranslateAudio(item.pcm);
+      else this.sendAudio(item.source, item.pcm);
+    }
+
+    let padded = 0;
+    const pad = () => {
+      if (this.phase !== "live" || this.talking || padded >= TURN_PAD_CHUNKS) {
+        this.padTimer = null;
+        return;
+      }
+      this.feedUpstreams(Buffer.alloc(MIC_CHUNK_BYTES));
+      padded += 1;
+      this.padTimer = setTimeout(pad, 100);
+    };
+    pad();
+
+    this.turnDoneTimer = setInterval(() => {
+      const now = Date.now();
+      if (now - Math.max(turn.stoppedAt, turn.lastAudioAt) < TURN_QUIET_MS && now - turn.stoppedAt < TURN_MAX_WAIT_MS) return;
+      if (this.turnDoneTimer) clearInterval(this.turnDoneTimer);
+      this.turnDoneTimer = null;
+      const firstAfterStop = turn.firstAudioAt ? `${turn.firstAudioAt - turn.stoppedAt}ms` : "none";
+      this.log(`turn ${turn.id}: translated ${(turn.audioMs / 1000).toFixed(1)}s of audio (first audio vs stop: ${firstAfterStop})`);
+      this.send({ type: "turn", turnId: turn.id, state: "done" });
+    }, 250);
+  }
+
+  private clearTapTimers(): void {
+    if (this.padTimer) clearTimeout(this.padTimer);
+    if (this.turnDoneTimer) clearInterval(this.turnDoneTimer);
+    this.padTimer = null;
+    this.turnDoneTimer = null;
   }
 
   // ---------------------------------------------------------------- agent controls
@@ -964,6 +1073,10 @@ export class ParleySession {
 
   private fanOut(pcm: Buffer): void {
     this.record(pcm);
+    this.feedUpstreams(pcm);
+  }
+
+  private feedUpstreams(pcm: Buffer): void {
     this.translateToA?.sendAudio(pcm);
     this.translateToB?.sendAudio(pcm);
     this.scribe?.sendAudio(pcm);

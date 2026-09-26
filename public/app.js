@@ -36,7 +36,12 @@ const state = {
   stats: null,
   duckTimer: null,
   playing: {},
+  talking: false,
+  turnId: 0,
+  turnDone: true,
 };
+
+const isTapMode = () => state.config?.mode === "tap";
 
 // ----------------------------------------------------------------- boot
 
@@ -85,6 +90,9 @@ function populateSetup() {
     select.value = prefs[id] ?? fallback;
   }
   $("#duplex-half").checked = prefs.duplexHalf ?? true;
+  const mode = document.querySelector(`input[name="mode"][value="${prefs.mode === "tap" ? "tap" : "auto"}"]`);
+  if (mode) mode.checked = true;
+  syncModeUi();
   if (!allowByok) $("#byok").hidden = true;
   if (!hasServerKey) {
     $("#byok").open = true;
@@ -101,12 +109,22 @@ function savePrefs() {
     "#voice-counterpart": $("#voice-counterpart").value,
     scenario: document.querySelector('input[name="scenario"]:checked')?.value,
     duplexHalf: $("#duplex-half").checked,
+    mode: selectedMode(),
   };
   localStorage.setItem("parley:prefs", JSON.stringify(prefs));
   sessionStorage.setItem("parley:key", $("#api-key").value.trim());
 }
 
+function selectedMode() {
+  return document.querySelector('input[name="mode"]:checked')?.value === "tap" ? "tap" : "auto";
+}
+
+function syncModeUi() {
+  $("#duplex-toggle").hidden = selectedMode() === "tap";
+}
+
 function bindSetup() {
+  for (const input of document.querySelectorAll('input[name="mode"]')) input.addEventListener("change", syncModeUi);
   $("#btn-swap").addEventListener("click", () => {
     const a = $("#lang-a");
     const b = $("#lang-b");
@@ -152,6 +170,7 @@ async function startSession() {
     agentVoice: $("#voice-agent").value,
     counterpartVoice: $("#voice-counterpart").value,
     duplex: $("#duplex-half").checked ? "half" : "full",
+    mode: selectedMode(),
   };
   const apiKey = $("#api-key").value.trim();
   if (apiKey) config.apiKey = apiKey;
@@ -245,6 +264,11 @@ const handlers = {
       showView("setup");
     }
   },
+  turn(message) {
+    if (message.turnId !== state.turnId || message.state !== "done") return;
+    state.turnDone = true;
+    refreshTalk();
+  },
   pong() {},
 };
 
@@ -258,7 +282,14 @@ function enterLive() {
   $("#flag-b").textContent = B.flag;
   $("#name-b").textContent = B.name;
   $("#role-b").textContent = state.scenario.roleB;
-  $("#gate-hint").textContent = state.config.duplex === "half" ? "Half-duplex: mic pauses while translations play." : "Full-duplex: use headphones.";
+  $("#gate-hint").textContent = isTapMode()
+    ? "Tap to talk: the mic is only on while you speak (Space works too)."
+    : state.config.duplex === "half" ? "Half-duplex: mic pauses while translations play." : "Full-duplex: use headphones.";
+  $("#talk-row").hidden = !isTapMode();
+  state.talking = false;
+  state.turnId = 0;
+  state.turnDone = true;
+  refreshTalk();
   const chips = $("#opener-chips");
   chips.innerHTML = "";
   state.scenario.openers.forEach((opener, index) => {
@@ -283,6 +314,7 @@ function teardownLive() {
   state.player = null;
   if (state.ws && state.ws.readyState <= 1) state.ws.close();
   state.ws = null;
+  state.talking = false;
   $("#btn-end").hidden = true;
   const button = $("#btn-start");
   button.disabled = false;
@@ -324,12 +356,14 @@ function sendJson(message) {
 // ----------------------------------------------------------------- audio callbacks
 
 function onMicFrame(buffer) {
+  if (isTapMode() && !state.talking && !state.engaged) return;
   if (state.ws?.readyState === 1) state.ws.send(buffer);
 }
 
 let speechFrames = 0;
 function onMicLevel(level) {
-  $("#mic-meter i").style.width = `${Math.min(100, level * 400)}%`;
+  const live = !isTapMode() || state.talking || state.engaged;
+  $("#mic-meter i").style.width = live ? `${Math.min(100, level * 400)}%` : "0%";
   // Local barge-in: duck Parley the instant the user starts talking, before the server confirms.
   if (state.agentState === "speaking" && state.player?.isPlaying("agent")) {
     speechFrames = level > 0.035 ? speechFrames + 1 : 0;
@@ -350,6 +384,7 @@ function onOutputLevel(level) {
 function onPlaybackState(source, playbackState) {
   state.playing[source] = playbackState === "start";
   sendJson({ type: "playback", source, state: playbackState });
+  if (source === "translate") refreshTalk();
   if (source === "agent") {
     if (playbackState === "start") setOrb("speaking", state.agentCard?.querySelector(".utt-source")?.textContent || "Parley is speaking…");
     else if (state.agentState === "speaking") {
@@ -367,6 +402,7 @@ function onPlaybackState(source, playbackState) {
 
 function bindLive() {
   $("#btn-end").addEventListener("click", () => {
+    if (state.talking) stopTalking();
     sendJson({ type: "end" });
     showView("summary");
     $("#summary-grid").hidden = true;
@@ -399,11 +435,18 @@ function bindLive() {
   ask.addEventListener("pointerleave", release);
   ask.addEventListener("pointercancel", release);
   window.addEventListener("keydown", (event) => {
-    if (event.code === "Space" && document.body.dataset.view === "live" && !event.repeat && !isTyping(event)) engage(event);
+    if (event.code !== "Space" || document.body.dataset.view !== "live" || event.repeat || isTyping(event)) return;
+    if (isTapMode()) {
+      event.preventDefault();
+      toggleTalk();
+    } else {
+      engage(event);
+    }
   });
   window.addEventListener("keyup", (event) => {
-    if (event.code === "Space" && document.body.dataset.view === "live") release();
+    if (event.code === "Space" && document.body.dataset.view === "live" && !isTapMode()) release();
   });
+  $("#btn-talk").addEventListener("click", toggleTalk);
   $("#btn-stop").addEventListener("click", () => {
     state.player?.flush("agent");
     sendJson({ type: "agent", action: "interrupt" });
@@ -424,6 +467,40 @@ function bindLive() {
       $("#btn-inject").click();
     }
   });
+}
+
+function toggleTalk() {
+  if (!isTapMode()) return;
+  if (state.talking) stopTalking();
+  else startTalking();
+}
+
+function startTalking() {
+  state.player?.flush();
+  state.talking = true;
+  state.turnDone = false;
+  state.turnId += 1;
+  sendJson({ type: "turn", action: "start" });
+  refreshTalk();
+}
+
+function stopTalking() {
+  state.talking = false;
+  sendJson({ type: "turn", action: "stop" });
+  refreshTalk();
+}
+
+function refreshTalk() {
+  if (!isTapMode()) return;
+  const [talkState, label] = state.talking
+    ? ["listening", "Listening… tap when done"]
+    : state.player?.isPlaying("translate")
+      ? ["speaking", "Speaking translation… tap to talk"]
+      : !state.turnDone
+        ? ["translating", "Translating…"]
+        : ["idle", "Tap to talk"];
+  $("#btn-talk").dataset.state = talkState;
+  $("#talk-label").textContent = label;
 }
 
 function isTyping(event) {

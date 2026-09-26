@@ -73,7 +73,17 @@
                 <select id="voice-counterpart"></select>
               </label>
             </div>
-            <label class="toggle">
+            <div class="mode-row" role="radiogroup" aria-label="How turns work">
+              <label class="toggle">
+                <input type="radio" name="mode" value="auto" checked />
+                <span><strong>Hands-free</strong><small>The mic is always on. Parley translates while people talk. Best with headphones.</small></span>
+              </label>
+              <label class="toggle">
+                <input type="radio" name="mode" value="tap" />
+                <span><strong>Tap to talk</strong><small>Tap, speak as long as you need, tap again, and hear the translation. Most reliable on laptop speakers.</small></span>
+              </label>
+            </div>
+            <label class="toggle" id="duplex-toggle">
               <input type="checkbox" id="duplex-half" checked />
               <span><strong>Half-duplex safety</strong><small>Mute the mic while translated audio plays, so laptop speakers cannot feed the translation back into the interpreter. Turn off with headphones.</small></span>
             </label>
@@ -111,6 +121,12 @@
               <div class="orb-controls">
                 <button class="btn btn-ask" id="btn-ask" title="Hold to talk privately to Parley (or hold Space)">Hold to ask Parley</button>
                 <button class="btn btn-ghost" id="btn-stop" title="Stop Parley mid-sentence">Stop</button>
+              </div>
+              <div class="talk-row" id="talk-row" hidden>
+                <button class="btn talk" id="btn-talk" data-state="idle">
+                  <svg class="talk-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z" /></svg>
+                  <span id="talk-label">Tap to talk</span>
+                </button>
               </div>
               <div class="mic-row">
                 <button class="btn btn-ghost btn-sm" id="btn-mute">Mute mic</button>
