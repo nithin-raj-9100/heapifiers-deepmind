@@ -35,7 +35,8 @@ app.get("/api/catalog", (_request, response) => {
   });
 });
 
-app.use(express.static(config.publicDir, { extensions: ["html"], maxAge: "5m" }));
+// Revalidate on every load: a cached app.js from before a deploy breaks against the new index.html.
+app.use(express.static(config.publicDir, { extensions: ["html"], maxAge: 0 }));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 4 * 1024 * 1024 });
