@@ -17,15 +17,15 @@ Built for the Google AI hackathon, Problem Statement 2 (Next-Gen Voice & Real-Ti
 | `gemini-3.8-flash` | Structured record (JSON schema) and the in-character simulated counterpart |
 | `gemini-3.8-flash-tts` / `gemini-3.8-flash-lite-tts` | Streaming spoken readback of the record; voice of the simulated counterpart |
 
-- **Live demo:** _add your deployed URL here_ (see [Deploy](#deploy))
+- **Live demo:** https://parley-production-085b.up.railway.app/
 - **Writeup:** [WRITEUP.md](WRITEUP.md)
 - **Foundation:** [gemini-whisper-local-main/](gemini-whisper-local-main/), our teammate's Swift dictation app, whose Live transcript-merging logic we ported to TypeScript
 
 ## The one-minute tour
 
 1. Pick two languages and a scenario (clinic visit, lease agreement, customer support, travel desk, general).
-2. Talk. Either person, either language, one microphone. Parley detects who is speaking and *speaks* the translation in the other language, starting while the speaker is still talking and finishing about 300 ms after they stop.
-3. Say **"Parley, what does *deductible* mean?"** and the assistant answers in your language, then stops. It stays silent otherwise. After every turn it reports the speaker's **tone of voice** (from the audio, via a tool call) and pins any **explicit commitment** it hears.
+2. Talk. Either person, either language, one microphone. Parley detects who is speaking and *speaks* the translation in the other language. On headphones (hands-free, full duplex) the translation starts while the speaker is still talking and finishes about 300 ms after they stop; on laptop speakers (half duplex) it is held until the speaker pauses and played consecutively so nothing feeds back. **Tap to talk** mode streams the mic only while a turn is open and plays the translation whole.
+3. Say **"Parley, what does *deductible* mean?"** and the assistant answers in your language, repeats it in the other language so both people follow, then stops. It stays silent otherwise. After every turn it reports the speaker's **tone of voice** (from the audio, via a tool call) and pins any **explicit commitment** it hears.
 4. Talk over Parley and it yields instantly, whether it is still generating or the browser is still playing buffered audio.
 5. Alone? **Simulate Person B**: Gemini 3.8 Flash writes the counterpart's next in-character line in the other language, Flash-Lite TTS voices it (streaming, first audio in about a second), and the same audio is fed through the live pipeline exactly as if someone had spoken it, so you hear it interpreted back.
 6. **End & summarize**: the whole recording goes through diarized transcription, then structured extraction: summaries in both languages, decisions, action items with owners, scenario-specific fields (chief complaint, deposit, order number…), a tone arc and risk flags. Press **Read aloud** to hear it in either language.
@@ -71,7 +71,8 @@ Design decisions worth knowing:
 - **Two-key wake gating.** Parley's audio reaches the browser only when the turn was addressed to it: the model says so through the `addressed_to_parley` argument of `report_tone` (it heard the audio, so a garbled wake word does not fool it), the transcript matches a wake-word pattern, or the user holds **Hold to ask Parley** (a private aside: the mic then goes to the agent only, not to the translators). The prompt also asks the model to stay silent, but the server enforces it.
 - **Blocking tools.** Gemini 3.8 Live defaults to non-blocking function calls; with the default, every tool result triggered a new generation that called the tool again (24 tone reports for 4 turns). Declaring both tools `BLOCKING` gives exactly one report per turn, delivered before any speech, which is what the gate needs.
 - **Phrase assembly.** The translate model streams transcription fragments per phrase and an empty message when a phrase ends, but sends the same empty messages as keepalives. The assembler only opens phrases on text, closes them on the first empty message, and finalizes on new text after a close or on idle.
-- **Half-duplex safety.** On laptop speakers, translated audio would be re-captured and translated back. The browser reports playback state; the server drops mic frames while translation audio plays. Barge-in on Parley itself stays open. Turn it off with headphones for full duplex.
+- **Half-duplex on speakers, full duplex on headphones, or tap to talk.** On laptop speakers, translated audio would be re-captured and translated back. In half duplex the server holds translations until the speaker has paused, plays them consecutively, and gates the mic while a translation or Parley plays (the gate expires from audio actually sent, not only from the browser's playback report). The translate model also streams digital silence between phrases; a peak-level filter drops it so the gate can open. Tap-to-talk needs no gate at all: the mic streams only while someone holds the floor.
+- **One voice at a time.** The browser player owns one timeline and lets a source keep it until it finishes and goes quiet; two streams arriving together (a translation and Parley, say) never interleave. The stream whose target is the language just spoken is muted server-side, since it is not always silent on its own.
 - **Keys stay server-side.** The browser never sees the Gemini key; the server caps concurrent sessions and session length. Visitors can also bring their own key.
 
 ## Measured on the real API (scripts/e2e.mjs, 26 Sept 2026)
@@ -112,7 +113,8 @@ npm run e2e       # end-to-end against the real API: synthesizes speech, drives 
 
 The server is a single Node process that needs WebSockets, so anything that runs a container works.
 
-- **Render (fastest, free tier):** click *New → Blueprint* in Render, point it at this repo; [render.yaml](render.yaml) provisions the service. Add `GEMINI_API_KEY` in the dashboard.
+- **Railway (what the live demo runs on):** new project from this repo, it builds the [Dockerfile](Dockerfile); set `GEMINI_API_KEY` in Variables.
+- **Render (free tier):** click *New → Blueprint* in Render, point it at this repo; [render.yaml](render.yaml) provisions the service. Add `GEMINI_API_KEY` in the dashboard.
 - **Google Cloud Run:** `gcloud run deploy parley --source . --allow-unauthenticated --timeout=3600 --session-affinity --set-env-vars GEMINI_API_KEY=…`
 - **Docker anywhere:** `docker build -t parley . && docker run -p 8080:8080 -e GEMINI_API_KEY=… parley`
 - **From a laptop for a live demo:** `npm start` then `scripts/tunnel.sh` (Cloudflare quick tunnel; no account).
@@ -121,7 +123,7 @@ Environment variables are documented in [.env.example](.env.example): model over
 
 ## Judge's guide (two minutes, one person)
 
-1. Choose **English ↔ Spanish**, scenario **Clinic visit**, start. Three pills turn green as the upstream sessions come up.
+1. Choose **English ↔ Spanish**, scenario **Clinic visit**, hands-free with headphones (or **Tap to talk** on speakers), start. Three pills turn green as the upstream sessions come up.
 2. Say in English: *"Good morning, what brings you in today?"* You hear it in Spanish; the card shows both texts and `en`.
 3. Click a **Simulate Person B** chip. The "patient" answers in Spanish, you hear the English interpretation, and the tone chip shows what Parley heard in the voice.
 4. Say: *"Parley, what does fiebre mean?"* Parley answers in English. Start talking while it speaks: it stops.
