@@ -89,10 +89,6 @@ function populateSetup() {
     }
     select.value = prefs[id] ?? fallback;
   }
-  $("#duplex-half").checked = prefs.duplexHalf ?? true;
-  const mode = document.querySelector(`input[name="mode"][value="${prefs.mode === "tap" ? "tap" : "auto"}"]`);
-  if (mode) mode.checked = true;
-  syncModeUi();
   if (!allowByok) $("#byok").hidden = true;
   if (!hasServerKey) {
     $("#byok").open = true;
@@ -108,23 +104,12 @@ function savePrefs() {
     "#voice-agent": $("#voice-agent").value,
     "#voice-counterpart": $("#voice-counterpart").value,
     scenario: document.querySelector('input[name="scenario"]:checked')?.value,
-    duplexHalf: $("#duplex-half").checked,
-    mode: selectedMode(),
   };
   localStorage.setItem("parley:prefs", JSON.stringify(prefs));
   sessionStorage.setItem("parley:key", $("#api-key").value.trim());
 }
 
-function selectedMode() {
-  return document.querySelector('input[name="mode"]:checked')?.value === "tap" ? "tap" : "auto";
-}
-
-function syncModeUi() {
-  $("#duplex-toggle").hidden = selectedMode() === "tap";
-}
-
 function bindSetup() {
-  for (const input of document.querySelectorAll('input[name="mode"]')) input.addEventListener("change", syncModeUi);
   $("#btn-swap").addEventListener("click", () => {
     const a = $("#lang-a");
     const b = $("#lang-b");
@@ -169,8 +154,7 @@ async function startSession() {
     scenario: document.querySelector('input[name="scenario"]:checked')?.value ?? "general",
     agentVoice: $("#voice-agent").value,
     counterpartVoice: $("#voice-counterpart").value,
-    duplex: $("#duplex-half").checked ? "half" : "full",
-    mode: selectedMode(),
+    mode: "tap",
   };
   const apiKey = $("#api-key").value.trim();
   if (apiKey) config.apiKey = apiKey;

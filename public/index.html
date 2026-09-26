@@ -73,20 +73,6 @@
                 <select id="voice-counterpart"></select>
               </label>
             </div>
-            <div class="mode-row" role="radiogroup" aria-label="How turns work">
-              <label class="toggle">
-                <input type="radio" name="mode" value="auto" checked />
-                <span><strong>Hands-free</strong><small>The mic is always on. Parley translates while people talk. Best with headphones.</small></span>
-              </label>
-              <label class="toggle">
-                <input type="radio" name="mode" value="tap" />
-                <span><strong>Tap to talk</strong><small>Tap, speak as long as you need, tap again, and hear the translation. Most reliable on laptop speakers.</small></span>
-              </label>
-            </div>
-            <label class="toggle" id="duplex-toggle">
-              <input type="checkbox" id="duplex-half" checked />
-              <span><strong>Half-duplex safety</strong><small>Mute the mic while translated audio plays, so laptop speakers cannot feed the translation back into the interpreter. Turn off with headphones.</small></span>
-            </label>
             <details class="byok" id="byok">
               <summary>Use my own Gemini API key</summary>
               <label class="field">
@@ -98,7 +84,7 @@
 
           <div class="setup-actions">
             <button type="submit" class="btn btn-primary btn-lg" id="btn-start">Start listening</button>
-            <p class="hint" id="setup-hint">Your browser will ask for microphone access. Use headphones for full-duplex conversations.</p>
+            <p class="hint" id="setup-hint">Your browser will ask for microphone access. Tap the mic, speak, tap again to hear the translation.</p>
           </div>
         </form>
       </section>

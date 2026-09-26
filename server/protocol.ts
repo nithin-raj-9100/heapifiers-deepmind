@@ -146,7 +146,9 @@ export function normalizeSessionConfig(input: Partial<SessionConfig> | undefined
   const agentVoice = typeof input?.agentVoice === "string" && voiceNames.has(input.agentVoice) ? input.agentVoice : "Kore";
   const counterpartVoice = typeof input?.counterpartVoice === "string" && voiceNames.has(input.counterpartVoice) ? input.counterpartVoice : "Leda";
   const duplex = input?.duplex === "full" ? "full" : "half";
-  const mode = input?.mode === "tap" ? "tap" : "auto";
+  // Always-on listening garbled conversations on laptop speakers (translations leaked back into the
+  // mic); every session is tap-to-talk.
+  const mode = "tap";
   const apiKey = allowByok && typeof input?.apiKey === "string" && input.apiKey.trim().length >= 20 ? input.apiKey.trim() : undefined;
   return { languageA, languageB, scenario, agentVoice, counterpartVoice, duplex, mode, ...(apiKey ? { apiKey } : {}) };
 }

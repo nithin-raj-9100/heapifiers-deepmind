@@ -36,7 +36,7 @@ const TRANSLATE_GATE_SLACK_MS = 1500;
 // quiet breaths and word tails inside speech must survive, only true digital silence goes.
 const TRANSLATE_SILENCE_PEAK = 0.002;
 // Half-duplex plays translations consecutively: held until the speaker has paused this long.
-const SPEAKER_PAUSE_MS = 700;
+const SPEAKER_PAUSE_MS = 1200;
 const MIC_VOICE_RMS = 0.015;
 // Tap mode: after a turn ends, a little silence lets the models flush the last words and close the turn.
 const TURN_PAD_CHUNKS = 10;
