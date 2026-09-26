@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type WebSocket from "ws";
-import { frameAudio, MIC_CHUNK_BYTES, MIC_SAMPLE_RATE, MODEL_OUTPUT_SAMPLE_RATE, resamplePcm16, type AudioSource } from "./audio.js";
+import { frameAudio, MIC_CHUNK_BYTES, MIC_SAMPLE_RATE, MODEL_OUTPUT_SAMPLE_RATE, resamplePcm16, type AudioSource, rmsLevel } from "./audio.js";
 import { findLanguage, findScenario, type Scenario } from "./catalog.js";
 import type { ModelIds } from "./config.js";
 import { LiveClient, type LiveCloseInfo, type LiveMessage } from "./gemini/live-client.js";
@@ -24,9 +24,19 @@ type TranslateDirection = "toA" | "toB";
 
 /** Ways speech recognition tends to spell the wake word, plus "interpreter" in a few languages. */
 const WAKE_PATTERN = /\b(parl(?:ey|ay|ee|e|y|i)|pharley|barley|interpreter|int[ée]rprete|interpr[èe]te|dolmetscher|traductor(?:a)?|通訳|翻译|दुभाषिया)\b/i;
+// \b is ASCII-only in JS, so non-Latin spellings of "Parley" need their own unanchored pattern.
+const WAKE_PATTERN_SCRIPTS = /(పార్లే|పార్లీ|పార్లె|పార్లి|पार्ले|पार्ली|पारले|पार्लि|பார்லே|ಪಾರ್ಲೆ|പാർലി|পার্লে|પાર્લે|ਪਾਰਲੇ|पार्ले)/;
 const RECONNECT_LIMIT = 4;
 const PHRASE_IDLE_MS = 2200;
 const PLAYBACK_TAIL_MS = 300;
+// The browser's playback "end" can be lost; never trust "start" beyond the audio we actually sent plus scheduling slack.
+const TRANSLATE_GATE_SLACK_MS = 1500;
+// The translate model streams digital silence in real time between phrases, forever. Forwarding it keeps
+// the half-duplex gate shut and the phrase idle timer alive, so it must be dropped here.
+const TRANSLATE_SILENCE_RMS = 0.002;
+// Half-duplex plays translations consecutively: held until the speaker has paused this long.
+const SPEAKER_PAUSE_MS = 700;
+const MIC_VOICE_RMS = 0.015;
 
 /**
  * Collects the fragmentary input/output transcriptions of the translate model into
@@ -221,6 +231,11 @@ export class ParleySession {
   private injecting = false;
   private injectTimer: NodeJS.Timeout | null = null;
   private playingUntil: Record<AudioSource, number> = { translate: 0, agent: 0, inject: 0, readback: 0 };
+  private translateAudioEndsAt = 0;
+  private agentAudioEndsAt = 0;
+  private heldTranslate: Buffer[] = [];
+  private lastVoiceAt = 0;
+  private releaseTimer: NodeJS.Timeout | null = null;
 
   private readonly metrics = {
     translateFirstAudioMs: [] as number[],
@@ -236,6 +251,7 @@ export class ParleySession {
     reconnects: 0,
   };
   private scribeResult: ScribeOutput | null = null;
+  private micProbe = { frames: 0, gated: 0, sumSquares: 0, samples: 0, peak: 0, since: 0, translateMs: 0 };
 
   constructor(
     private readonly socket: WebSocket,
@@ -315,7 +331,12 @@ export class ParleySession {
       this.injecting ||
       now < this.playingUntil.readback ||
       now < this.playingUntil.inject ||
-      (this.config.duplex === "half" && now < this.playingUntil.translate);
+      (this.config.duplex === "half" &&
+        !this.engaged &&
+        (now < Math.min(this.playingUntil.translate, this.translateAudioEndsAt + TRANSLATE_GATE_SLACK_MS) ||
+          now < Math.min(this.playingUntil.agent, this.agentAudioEndsAt + TRANSLATE_GATE_SLACK_MS)));
+    this.probeMic(pcm, gated, now);
+    if (!gated && rmsLevel(pcm) >= MIC_VOICE_RMS) this.lastVoiceAt = now;
     if (gated) {
       this.metrics.micFramesGated++;
       return;
@@ -333,6 +354,7 @@ export class ParleySession {
     if (this.phase === "destroyed") return;
     this.phase = "destroyed";
     this.stopInjection();
+    this.stopReleasing();
     if (this.maxTimer) clearTimeout(this.maxTimer);
     this.maxTimer = null;
     for (const client of [this.translateToA, this.translateToB, this.agent, this.scribe]) client?.close();
@@ -370,6 +392,7 @@ export class ParleySession {
     this.send({ type: "ready", sessionId: this.id, models: { ...this.deps.models }, config: publicConfig, limits: { maxMinutes: this.deps.maxMinutes } });
     this.log(`start ${config.languageA}↔${config.languageB} scenario=${config.scenario} duplex=${config.duplex} byok=${Boolean(config.apiKey)}`);
 
+    if (config.duplex === "half") this.releaseTimer = setInterval(() => this.releaseHeldTranslate(), 100);
     this.openTranslate("toA");
     this.openTranslate("toB");
     this.openAgent();
@@ -381,6 +404,7 @@ export class ParleySession {
     this.phase = "ending";
     this.log(`ending: ${reason}`);
     this.stopInjection();
+    this.stopReleasing();
     if (this.maxTimer) clearTimeout(this.maxTimer);
     this.maxTimer = null;
     this.endedAt = Date.now();
@@ -562,11 +586,38 @@ export class ParleySession {
     for (const part of content.modelTurn?.parts ?? []) {
       if (!part.inlineData?.data) continue;
       const pcm = Buffer.from(part.inlineData.data, "base64");
-      if (pcm.length < 2) continue;
+      if (pcm.length < 2 || rmsLevel(pcm) < TRANSLATE_SILENCE_RMS) continue;
       phrase.audioArrived();
-      if (phrase.audioAllowed) this.sendAudio("translate", pcm);
+      if (!phrase.audioAllowed) continue;
+      if (this.config.duplex === "half") {
+        this.heldTranslate.push(pcm);
+        this.releaseHeldTranslate();
+      } else {
+        this.sendTranslateAudio(pcm);
+      }
     }
     void client;
+  }
+
+  private releaseHeldTranslate(): void {
+    if (this.heldTranslate.length === 0 || this.injecting) return;
+    if (Date.now() - this.lastVoiceAt < SPEAKER_PAUSE_MS) return;
+    const held = this.heldTranslate;
+    this.heldTranslate = [];
+    for (const pcm of held) this.sendTranslateAudio(pcm);
+  }
+
+  private stopReleasing(): void {
+    if (this.releaseTimer) clearInterval(this.releaseTimer);
+    this.releaseTimer = null;
+    this.heldTranslate = [];
+  }
+
+  private sendTranslateAudio(pcm: Buffer): void {
+    const now = Date.now();
+    this.translateAudioEndsAt = Math.max(now, this.translateAudioEndsAt) + (pcm.length / 2 / 24000) * 1000;
+    this.micProbe.translateMs += (pcm.length / 2 / 24000) * 1000;
+    this.sendAudio("translate", pcm);
   }
 
   private onAgentMessage(client: LiveClient, message: LiveMessage): void {
@@ -608,7 +659,7 @@ export class ParleySession {
     if (!content) return;
     if (content.inputTranscription?.text) {
       this.agentTurn.heard += content.inputTranscription.text;
-      if (WAKE_PATTERN.test(this.agentTurn.heard)) this.agentTurn.addressed = true;
+      if (WAKE_PATTERN.test(this.agentTurn.heard) || WAKE_PATTERN_SCRIPTS.test(this.agentTurn.heard)) this.agentTurn.addressed = true;
     }
     if (content.interrupted) {
       if (this.agentTurn.speaking) {
@@ -642,6 +693,7 @@ export class ParleySession {
         }
         this.send({ type: "agent", event: "speaking" });
       }
+      this.agentAudioEndsAt = Math.max(Date.now(), this.agentAudioEndsAt) + (pcm.length / 2 / 24000) * 1000;
       this.sendAudio("agent", pcm);
     }
     if (content.outputTranscription?.text && this.agentTurn.speaking) {
@@ -886,6 +938,29 @@ export class ParleySession {
   }
 
   // ---------------------------------------------------------------- plumbing
+
+  private probeMic(pcm: Buffer, gated: boolean, now: number): void {
+    const probe = this.micProbe;
+    if (!probe.since) probe.since = now;
+    probe.frames++;
+    if (gated) probe.gated++;
+    for (let offset = 0; offset + 1 < pcm.length; offset += 2) {
+      const sample = pcm.readInt16LE(offset) / 0x8000;
+      probe.sumSquares += sample * sample;
+      probe.peak = Math.max(probe.peak, Math.abs(sample));
+    }
+    probe.samples += pcm.length >> 1;
+    if (now - probe.since < 2000) return;
+    const rms = Math.sqrt(probe.sumSquares / Math.max(1, probe.samples));
+    const playing = (Object.keys(this.playingUntil) as AudioSource[]).filter((source) => now < this.playingUntil[source]);
+    this.log(
+      `mic ${((now - probe.since) / 1000).toFixed(1)}s: frames=${probe.frames} bytes/frame=${pcm.length} gated=${probe.gated} ` +
+        `rms=${rms.toFixed(4)} peak=${probe.peak.toFixed(3)} engaged=${this.engaged} injecting=${this.injecting} ` +
+        `playing=[${playing.join(",")}] translateSentMs=${Math.round(probe.translateMs)} ` +
+        `translateEndsIn=${Math.max(0, Math.round(this.translateAudioEndsAt - now))}ms ${rms < 0.003 ? "(SILENT)" : ""}`,
+    );
+    this.micProbe = { frames: 0, gated: 0, sumSquares: 0, samples: 0, peak: 0, since: now, translateMs: 0 };
+  }
 
   private fanOut(pcm: Buffer): void {
     this.record(pcm);
