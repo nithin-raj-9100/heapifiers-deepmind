@@ -78,6 +78,7 @@ Design decisions worth knowing:
 
 | Metric | Value |
 | --- | --- |
+| First translated audio after the speaker *starts* (median) | 2.2–2.4 s |
 | Translated audio complete after the speaker stops (median) | 190–350 ms |
 | Parley's first audio after the speaker stops (median) | 1.0–1.6 s |
 | Barge-in: `interrupted` event after speech starts over Parley | under 0.5 s |
